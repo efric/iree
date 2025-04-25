@@ -1382,9 +1382,10 @@ LogicalResult WinogradOutputTransformOp::reifyResultShapes(
 void AttentionOp::build(OpBuilder &odsBuilder, OperationState &odsState,
                         TypeRange results, Value query, Value key, Value value,
                         Value scale, Value output, ArrayAttr indexingMaps,
-                        std::optional<Value> mask) {
+                        std::optional<Value> prob_output_scale, std::optional<Value> mask) {
+  Value probOutputScaleIn = prob_output_scale.value_or(Value());
   Value maskIn = mask.value_or(Value());
-  build(odsBuilder, odsState, results, query, key, value, scale, maskIn, output,
+  build(odsBuilder, odsState, results, query, key, value, scale, probOutputScaleIn, maskIn, output,
         indexingMaps, DictionaryAttr());
 }
 
@@ -1405,7 +1406,7 @@ LogicalResult AttentionOp::verify() {
   FloatType scaleElementType = dyn_cast<FloatType>(getScale().getType());
   if (!scaleElementType) {
     return attnOp->emitOpError("expected scale to be of floating point type");
-  }
+  }	
 
   // Check shape compatibility based on indexing maps.
   SmallVector<int64_t> shape(getIterationDomainRank());
@@ -1452,6 +1453,11 @@ LogicalResult AttentionOp::verify() {
     if (failed(checkShape("Mask", getMask().getType().getShape(), *maskMap)))
       return failure();
   }
+  
+  FloatType probOutputScaleElementType = dyn_cast<FloatType>(getProbOutputScale().getType());
+  if (getProbOutputScale() && !probOutputScaleElementType) {
+    return attnOp->emitOpError("expected prob output scale to be of floating point type");
+  }
 
   int expectedSymbols = getQueryMap().getNumInputs();
   auto checkDomain =
@@ -1495,9 +1501,11 @@ LogicalResult AttentionOp::verify() {
 
   return success();
 }
-
 MutableOperandRange AttentionOp::getDpsInitsMutable() {
-  return MutableOperandRange(*this, /*numInputs=*/getMask() ? 5 : 4,
+  //int maskCount = getMask() ? 1 : 0;
+  //int probOutputScaleCount = getProbOutputScale() ? 1 : 0;
+  //int count = 5 + maskCount + probOutputScaleCount;
+  return MutableOperandRange(*this, /*numInputs=*/0,
                              /*numInits=*/1);
 }
 
