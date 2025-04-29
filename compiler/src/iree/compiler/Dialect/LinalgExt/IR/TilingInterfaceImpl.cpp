@@ -2417,7 +2417,7 @@ OnlineAttentionOp::getTiledImplementation(OpBuilder &builder,
     tiledOperands.emplace_back(valueSliceOp->getResult(0));
     slices.push_back(valueSliceOp);
   }
-  
+
   /// Scale
   tiledOperands.emplace_back(scale);
   Value probOutputScale = getProbOutputScale();
@@ -2616,6 +2616,9 @@ FailureOr<TilingResult> OnlineAttentionOp::tileToPartialReduction(
   }
 
   tiledOperands.emplace_back(getScale());
+  if (getProbOutputScale()) {
+    tiledOperands.emplace_back(getProbOutputScale());
+  }
 
   if (Value mask = getMask()) {
     if (failed(appendSlice(mask, *getMaskMap(), offsets))) {
