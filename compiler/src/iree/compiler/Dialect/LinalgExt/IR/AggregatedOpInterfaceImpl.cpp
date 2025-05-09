@@ -386,7 +386,7 @@ Value computeQKAndElementwise(Location loc, OpBuilder &b, Value query,
       s = elementwiseValueInPlace<arith::AddFOp>(b, loc, sMap, scaleMap, s,
                                                  offset);
     } else {
-      s = elementwiseValueInPlace<arith::MulFOp>(b, loc, sMap, scaleMap, s,
+      s = elementwiseValueInPlace<arith::AddFOp>(b, loc, sMap, scaleMap, s,
                                                  prob_output_scale.value());
     }
   }
@@ -509,8 +509,10 @@ FailureOr<SmallVector<Value>> AttentionOp::decomposeOperation(OpBuilder &b) {
   if (pvAttrs) {
     result.getDefiningOp()->setAttrs(pvAttrs);
   }
+  Value scaledResult = elementwiseValueInPlace<arith::DivFOp>(b, loc, accMap, sMap, result,
+                                                                                        getProbOutputScale());
 
-  return SmallVector<Value>{result};
+  return SmallVector<Value>{scaledResult};
 }
 
 //===----------------------------------------------------------------------===//
