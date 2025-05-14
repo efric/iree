@@ -802,7 +802,10 @@ static bool isAttentionMaskGenerator(Operation *op) {
     if (auto attention =
             dyn_cast<IREE::LinalgExt::AttentionOp>(use.getOwner())) {
       if (attention.getMask() == use.get()) {
-        return true;
+        if (isa_and_present<linalg::LinalgOp>(attention.getMask().getDefiningOp()))
+        {
+          return true;
+        }
       }
     }
   }
