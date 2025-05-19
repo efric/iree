@@ -321,8 +321,6 @@ Value computeQKAndElementwise(Location loc, OpBuilder &b, Value query,
       loc, b.getFloatAttr(scale.getType(), M_LOG2E));
   scale = b.create<arith::MulFOp>(loc, scale, log2e);
 
-  auto qETy = getElementTypeOrSelf(query.getType());
-
   AffineMap scaleMap = AffineMap::get(/*dimCount=*/qMap.getNumInputs(),
                                       /*symbolCount=*/0, ctx);
 
@@ -371,18 +369,6 @@ Value computeQKAndElementwise(Location loc, OpBuilder &b, Value query,
     s = elementwiseValueInPlace<arith::MulFOp>(b, loc, sMap, scaleMap, s,
                                                scale);
 
-    // If we need to truncate to fp8 post softmax we apply a scaling to use the
-    // full fp8 range. We can do this with a offset as post `exp2` this equates
-    // to multiplying by a static value. We are able to do this as `max` and
-    // `sum` are scaled by the same value so the end result is the same.
-    auto fpTy = cast<FloatType>(qETy);
-    double mx =
-        APFloat::getLargest(fpTy.getFloatSemantics(), /*Negative=*/false)
-            .convertToDouble();
-    Value offset = b.create<arith::ConstantOp>(
-        loc, b.getFloatAttr(sElementType, clAttentionSoftmaxMax / mx));
-    s = elementwiseValueInPlace<arith::AddFOp>(b, loc, sMap, scaleMap, s,
-                                               offset);
   }
 
   // S += mask
@@ -576,6 +562,12 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   // newSum = normSum + rowSum(P)
   Value newSum = reduce<arith::AddFOp>(b, loc, pMap, sumMap, p, normSum);
 
+  MLIRContext *ctx = b.getContext();
+  AffineMap scaleMap = AffineMap::get(/*dimCount=*/qMap.getNumInputs(),
+  /*symbolCount=*/0, ctx);
+  Value probScale = b.create<arith::ConstantOp>(
+    loc, b.getFloatAttr(b.getF32Type(), 224.4384));
+  p = elementwiseValueInPlace<arith::MulFOp>(b, loc, pMap, scaleMap, p, probScale);
   // newAcc = norm * oldAcc
   AffineMap accMap = getOutputMap();
 
