@@ -7,6 +7,7 @@
 #include "iree/compiler/Codegen/Common/CombineLayoutTransformation.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
+#include "iree/compiler/Codegen/Transforms/Transforms.h"
 #include "iree/compiler/Dialect/LinalgExt/Transforms/Transforms.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -442,6 +443,31 @@ insertIdentityMapScatter(RewriterBase &rewriter,
 LogicalResult
 combineLayoutTransformation(MLIRContext *ctx, FunctionOpInterface funcOp,
                             PadDistributionConfigFn padDistributionConfigFn) {
+  // Sink relayout operations to the end of the funcOp.
+  RewritePatternSet propagationPatterns(ctx);
+  populateFoldTensorReshapeIntoBufferPatterns(propagationPatterns);
+  // Only sink unpack ops, so bail if the consumer operation is a pack.
+  auto controlPropagationFn = [](OpOperand *operand) -> bool {
+    Operation *consumer = operand->getOwner();
+    return !isa<linalg::PackOp>(consumer);
+  };
+  linalg::populateDataLayoutPropagationPatterns(propagationPatterns,
+                                                controlPropagationFn);
+  tensor::populateFoldTensorEmptyPatterns(propagationPatterns);
+  tensor::ExpandShapeOp::getCanonicalizationPatterns(propagationPatterns, ctx);
+  tensor::CollapseShapeOp::getCanonicalizationPatterns(propagationPatterns,
+                                                       ctx);
+  // Only sink reshape ops, so bail if the consumer operation is a reshape.
+  auto controlSinkReshapesFn = [](OpOperand *operand) -> bool {
+    Operation *consumer = operand->getOwner();
+    return !llvm::isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(consumer);
+  };
+  linalg::populateFoldReshapeOpsByExpansionPatterns(propagationPatterns,
+                                                    controlSinkReshapesFn);
+  if (failed(applyPatternsGreedily(funcOp, std::move(propagationPatterns)))) {
+    return failure();
+  }
+
   // Apply some preprocessing to convert complex layout transformation
   // ops like pack and unpack into simpler supported ops.
   IRRewriter rewriter(ctx);
