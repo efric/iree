@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/OpDefinition.h"
 
 using namespace mlir;
 using namespace mlir::iree_compiler::IREE::VectorExt;
@@ -660,6 +661,38 @@ void TransferGatherOp::getCanonicalizationPatterns(RewritePatternSet &results,
 Type TransferGatherOp::getExpectedMaskType() {
   return vector::inferTransferOpMaskType(getVectorType(), getPermutationMap());
 }
+
+// we can either have it lower to multiple multiple iree dot products or we can have it be like one vector iree dot product that does everything. 
+LogicalResult DotOp::verify() {
+  VectorType lhsType = dyn_cast<VectorType>(getLhs().getType());
+  VectorType rhsType = dyn_cast<VectorType>(getRhs().getType());
+
+  if (!lhsType || !rhsType) {
+    return emitOpError("operands must be vector types");
+  }
+
+  if (lhsType != rhsType) {
+    return emitOpError("lhs and rhs must have the same vector type");
+  }
+
+  if (lhsType.getRank() != 1) {
+    return emitOpError("only 1D vectors are currently supported");
+  }
+
+  Type accType = getAcc().getType();
+
+  if (accType != lhsType.getElementType()) {
+    return emitOpError("accumulator/result type must match vector element type");
+  }
+
+  return success();
+}
+
+OpFoldResult DotOp::fold(FoldAdaptor) {
+  return {};
+}
+
+
 
 // clang-format off
 #define GET_OP_CLASSES

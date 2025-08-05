@@ -4,6 +4,8 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include <cstdint>
+#include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
 #include "mlir/Dialect/AMDGPU/Transforms/Passes.h"
@@ -14,6 +16,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -183,12 +186,38 @@ struct SetMulAddFMF final : OpRewritePattern<vector::MultiDimReductionOp> {
   }
 };
 
+struct LowerDotToFMAChain : public OpRewritePattern<IREE::VectorExt::DotOp> {
+  using OpRewritePattern::OpRewritePattern;
+  
+  LogicalResult matchAndRewrite(IREE::VectorExt::DotOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto vecType = dyn_cast<VectorType>(op.getLhs().getType());
+    if (!vecType) {
+      return failure();
+    }
+    
+    const int64_t reductionSize = vecType.getShape().back();
+    
+    Value result = op.getAcc();
+    for (int64_t i = reductionSize - 1; i >= 0; i--) {
+      Value lhsSlice = rewriter.create<vector::ExtractOp>(loc, op.getLhs(), i);
+      Value rhsSlice = rewriter.create<vector::ExtractOp>(loc, op.getRhs(), i);
+      result = rewriter.create<math::FmaOp>(loc, lhsSlice, rhsSlice, result);
+    }
+    
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct LLVMGPUVectorLoweringPass final
     : impl::LLVMGPUVectorLoweringPassBase<LLVMGPUVectorLoweringPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<affine::AffineDialect>();
     registry.insert<memref::MemRefDialect>();
     registry.insert<vector::VectorDialect>();
+    registry.insert<IREE::VectorExt::IREEVectorExtDialect>();
     registry.insert<scf::SCFDialect>();
     registry.insert<math::MathDialect>();
   }
@@ -200,6 +229,7 @@ struct LLVMGPUVectorLoweringPass final
     {
       RewritePatternSet fmaPatterns(ctx);
       fmaPatterns.add<SetMulAddFMF>(ctx, PatternBenefit(2));
+      fmaPatterns.add<LowerDotToFMAChain>(ctx);
       populateUpliftToFMAPatterns(fmaPatterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(fmaPatterns)))) {
         return signalPassFailure();

@@ -242,4 +242,38 @@ def IREEVectorExt_TransferGatherOp : IREEVectorExt_PureOp<"transfer_gather", [
   let hasVerifier = 1;
 }
 
+def IREEVectorExt_DotOp : IREEVectorExt_PureOp<"dot", [
+    Pure,
+    AllTypesMatch<["lhs", "rhs"]>,
+    AllTypesMatch<["acc", "result"]>,
+  ]> {
+  let summary = "Dot product operation using FMA chain";
+  let description = [{
+    The iree_vector_ext.dot operation computes the dot product of two vectors 
+    using a chain of fused multiply-add (FMA) operations. This operation is 
+    designed to be lowered to sequential FMA instructions, preserving the fused
+    precision semantics.
+
+    Example:
+    ```mlir
+    %result = iree_vector_ext.dot %a, %b, %acc : vector<4xf32>, f32
+    ```
+
+    Lowering produces:
+    ```mlir
+    %x = fma(a[0], b[0], fma(a[1], b[1], fma(a[2], b[2], fma(a[3], b[3], 0)))) : f32
+    ```
+  }];
+  
+  let arguments = (ins
+    AnyVectorOfAnyRank:$lhs,
+    AnyVectorOfAnyRank:$rhs,
+    AnyType:$acc
+    );
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$lhs `,` $rhs `,` $acc attr-dict `:` type($lhs) `,` type($acc)";
+  let hasVerifier = 1;
+  let hasFolder = 1;
+}
+
 #endif  // IREE_DIALECT_VECTOREXT_OPS
