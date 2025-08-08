@@ -688,6 +688,7 @@ LogicalResult DotOp::verify() {
   return success();
 }
 
+// TODO
 OpFoldResult DotOp::fold(FoldAdaptor) {
   return {};
 }

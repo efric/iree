@@ -14,8 +14,10 @@
 #include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
@@ -211,6 +213,48 @@ struct LowerDotToFMAChain : public OpRewritePattern<IREE::VectorExt::DotOp> {
   }
 };
 
+struct LowerReductionToDot : public OpRewritePattern<vector::ReductionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ReductionOp redOp,
+                                PatternRewriter &rewriter) const override {
+    if (redOp.getKind() != vector::CombiningKind::ADD) {
+      return failure();
+    }
+
+    Value src = redOp.getVector();
+
+    auto extractOp = src.getDefiningOp<vector::ExtractOp>();
+    if (!extractOp) {
+      return failure();
+    }
+
+    Value extractSource = extractOp.getVector();
+    auto fmaOp = extractSource.getDefiningOp<math::FmaOp>();
+    if (!fmaOp) {
+      return failure();
+    }
+
+    Value mulLhs = fmaOp.getOperand(0);
+    Value mulRhs = fmaOp.getOperand(1);
+    Value acc = redOp.getAcc();
+
+    auto lhsSlice = rewriter.create<vector::ExtractOp>(
+        redOp.getLoc(), mulLhs,
+        extractOp.getStaticPosition() // e.g., [0, 0] to get vector<8xf32>
+    );
+
+    auto rhsSlice = rewriter.create<vector::ExtractOp>(
+        redOp.getLoc(), mulRhs, extractOp.getStaticPosition());
+
+    Value dotOp = rewriter.create<IREE::VectorExt::DotOp>(
+        redOp.getLoc(), redOp.getType(), lhsSlice, rhsSlice, acc);
+    rewriter.replaceOp(redOp, dotOp);
+
+    return success();
+  }
+};
+
 struct LLVMGPUVectorLoweringPass final
     : impl::LLVMGPUVectorLoweringPassBase<LLVMGPUVectorLoweringPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -229,7 +273,8 @@ struct LLVMGPUVectorLoweringPass final
     {
       RewritePatternSet fmaPatterns(ctx);
       fmaPatterns.add<SetMulAddFMF>(ctx, PatternBenefit(2));
-      fmaPatterns.add<LowerDotToFMAChain>(ctx);
+      fmaPatterns.add<LowerDotToFMAChain>(ctx, 3);
+      fmaPatterns.add<LowerReductionToDot>(ctx, PatternBenefit(3));
       populateUpliftToFMAPatterns(fmaPatterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(fmaPatterns)))) {
         return signalPassFailure();
