@@ -241,7 +241,7 @@ struct LowerReductionToDot : public OpRewritePattern<vector::ReductionOp> {
 
     auto lhsSlice = rewriter.create<vector::ExtractOp>(
         redOp.getLoc(), mulLhs,
-        extractOp.getStaticPosition() // e.g., [0, 0] to get vector<8xf32>
+        extractOp.getStaticPosition()
     );
 
     auto rhsSlice = rewriter.create<vector::ExtractOp>(
@@ -273,8 +273,6 @@ struct LLVMGPUVectorLoweringPass final
     {
       RewritePatternSet fmaPatterns(ctx);
       fmaPatterns.add<SetMulAddFMF>(ctx, PatternBenefit(2));
-      fmaPatterns.add<LowerDotToFMAChain>(ctx, 3);
-      fmaPatterns.add<LowerReductionToDot>(ctx, PatternBenefit(3));
       populateUpliftToFMAPatterns(fmaPatterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(fmaPatterns)))) {
         return signalPassFailure();
@@ -303,6 +301,7 @@ struct LLVMGPUVectorLoweringPass final
       vector::populateVectorMultiReductionLoweringPatterns(
           contractLoweringPatterns,
           vector::VectorMultiReductionLowering::InnerReduction);
+      contractLoweringPatterns.add<LowerReductionToDot>(ctx);
       if (failed(applyPatternsGreedily(funcOp,
                                        std::move(contractLoweringPatterns)))) {
         return signalPassFailure();
@@ -319,6 +318,15 @@ struct LLVMGPUVectorLoweringPass final
       vector::populateVectorTransferLoweringPatterns(vectorToLoopsPatterns);
       if (failed(applyPatternsGreedily(funcOp,
                                        std::move(vectorToLoopsPatterns)))) {
+        return signalPassFailure();
+      }
+    }
+
+    {
+      RewritePatternSet dotLoweringPatterns(ctx);
+      dotLoweringPatterns.add<LowerDotToFMAChain>(ctx);
+      if (failed(
+              applyPatternsGreedily(funcOp, std::move(dotLoweringPatterns)))) {
         return signalPassFailure();
       }
     }

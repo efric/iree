@@ -142,7 +142,7 @@ func.func @multi_reduction_f32(%a: vector<2x1x8xf32>, %b: vector<2x1x8xf32>) -> 
 // }
 
 // module {
-//   func.func @multi_reduction_f32(%arg0: vector<2x1x8xf32>, %arg1: vector<2x1x8xf32>) -> vector<2x1xf32> {
+//   func.func @reduction_tester(%arg0: vector<2x1x8xf32>, %arg1: vector<2x1x8xf32>) -> vector<2x1xf32> {
 //     %0 = ub.poison : vector<2x1xf32>
 //     %cst = arith.constant 0.000000e+00 : f32
 //     %cst_0 = arith.constant dense<0.000000e+00> : vector<2x1x8xf32>
