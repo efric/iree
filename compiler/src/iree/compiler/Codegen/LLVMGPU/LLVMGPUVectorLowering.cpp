@@ -183,6 +183,153 @@ struct SetMulAddFMF final : OpRewritePattern<vector::MultiDimReductionOp> {
   }
 };
 
+struct InsertDummyMulForAddReduce final
+    : OpRewritePattern<vector::MultiDimReductionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  static constexpr llvm::StringLiteral kMarker = "iree.dummy_mul_injected";
+
+  LogicalResult matchAndRewrite(vector::MultiDimReductionOp redOp,
+                                PatternRewriter &rewriter) const override {
+    // Only handle add-reductions once.
+    if (redOp.getKind() != vector::CombiningKind::ADD)
+      return failure();
+    if (redOp->hasAttr(kMarker))
+      return failure();
+
+    Value src = redOp.getSource();
+
+    // Only hack the case where the source comes from an scf.for result.
+    auto forOp = src.getDefiningOp<scf::ForOp>();
+    if (!forOp)
+      return failure();
+
+    // Only vectors of floating-point elements (what the FMA chain supports).
+    auto vt = dyn_cast<VectorType>(src.getType());
+    auto fty = dyn_cast_if_present<FloatType>(vt ? vt.getElementType() : Type());
+    if (!vt || !fty)
+      return failure();
+
+    Location loc = redOp.getLoc();
+
+    // Insert *after* the loop so the mul dominates the reduction use.
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointAfter(forOp);
+
+    // Build a ones vector that's not immediately folded:
+    // 1) constant 1.0
+    Value c1 = rewriter.create<arith::ConstantOp>(
+        loc, fty, rewriter.getFloatAttr(fty, 1.0));
+    // 2) wrap to prevent 'vector.splat' -> dense<1> folding in the same step
+    auto wrapped =
+        rewriter.create<UnrealizedConversionCastOp>(loc, TypeRange{fty},
+                                                    ValueRange{c1});
+    // 3) vector.splat(wrapped 1.0)
+    Value ones = rewriter.create<vector::SplatOp>(loc, vt, wrapped.getResult(0));
+
+    // %mul = arith.mulf %src, %ones : vector<...xf>
+    Value mul = rewriter.create<arith::MulFOp>(loc, src, ones);
+
+    // Replace the reduction with the same one but sourcing from %mul.
+    auto newRed = rewriter.replaceOpWithNewOp<vector::MultiDimReductionOp>(
+        redOp, redOp.getType(), redOp.getKind(), /*source=*/mul, redOp.getAcc(),
+        redOp.getReductionDimsAttr());
+    newRed->setAttr(kMarker, rewriter.getUnitAttr());
+
+    return success();
+  }
+};
+
+
+
+struct ReduceAddToContractWithOnes
+    : OpRewritePattern<vector::MultiDimReductionOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(vector::MultiDimReductionOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getKind() != vector::CombiningKind::ADD) 
+      return failure();
+    
+    auto vt = dyn_cast<VectorType>(op.getSource().getType());
+    if (!vt) 
+      return failure();
+    auto fty = dyn_cast<FloatType>(vt.getElementType());
+    if (!fty) 
+      return failure();
+    
+    // Build Ones tensor: vector.splat(1.0)
+    Location loc = op.getLoc();
+    Value one = rewriter.create<arith::ConstantOp>(
+        loc, fty, rewriter.getFloatAttr(fty, 1.0));
+    Value ones = rewriter.create<vector::SplatOp>(loc, vt, one);
+    
+    // Build maps/iters from the reduction mask
+    SmallVector<bool> mask = op.getReductionMask();
+    int64_t rank = mask.size();
+    
+    // Create affine expressions for each dimension
+    SmallVector<AffineExpr> srcExprs, dstExprs;
+    SmallVector<vector::IteratorType> iters;
+    
+    for (int64_t i = 0; i < rank; ++i) {
+      srcExprs.push_back(rewriter.getAffineDimExpr(i));
+      if (mask[i]) {
+        // Reduction dimension - not in output
+        iters.push_back(vector::IteratorType::reduction);
+      } else {
+        // Parallel dimension - appears in output
+        iters.push_back(vector::IteratorType::parallel);
+        dstExprs.push_back(rewriter.getAffineDimExpr(i));
+      }
+    }
+    
+    // Create affine maps: (d0, d1, ...) -> (d0, d1, ...) for sources
+    // and (d0, d1, ...) -> (parallel dims only) for dest
+    auto srcMap = AffineMap::get(rank, 0, srcExprs, op.getContext());
+    auto dstMap = AffineMap::get(rank, 0, dstExprs, op.getContext());
+    
+    // Handle accumulator - might be null/empty
+    Value acc = op.getAcc();
+    if (!acc) {
+      // Create zero accumulator if none provided
+      auto destType = op.getType();
+      if (auto destVecType = dyn_cast<VectorType>(destType)) {
+        acc = rewriter.create<arith::ConstantOp>(
+            loc, destVecType, 
+            rewriter.getZeroAttr(destVecType));
+      } else {
+        // Scalar result
+        acc = rewriter.create<arith::ConstantOp>(
+            loc, fty, rewriter.getFloatAttr(fty, 0.0));
+      }
+    }
+    
+    // Create iterator type attributes
+    auto itersAttr = rewriter.getArrayAttr(
+        llvm::to_vector(llvm::map_range(iters, [&](auto t) {
+          return cast<Attribute>(
+              vector::IteratorTypeAttr::get(rewriter.getContext(), t));
+        })));
+
+    // Create the contraction: source * ones + acc
+    auto contract = rewriter.create<vector::ContractionOp>(
+        loc, 
+        op.getType(),                          // Result type
+        op.getSource(),                        // LHS
+        ones,                                  // RHS  
+        acc,                                   // Accumulator
+        rewriter.getAffineMapArrayAttr({srcMap, srcMap, dstMap}), // Maps
+        itersAttr,                             // Iterator types
+        vector::CombiningKindAttr::get(rewriter.getContext(), 
+                                      vector::CombiningKind::ADD));
+    
+    rewriter.replaceOp(op, contract.getResult());
+    return success();
+  }
+};
+
+
+
 struct ContractToChainFMA final : OpRewritePattern<vector::ContractionOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -461,8 +608,17 @@ struct LLVMGPUVectorLoweringPass final
       }
     }
 
+    // {
+    //   RewritePatternSet pre(ctx);
+    //   pre.add<InsertDummyMulForAddReduce>(ctx);
+    //   if (failed(applyPatternsGreedily(funcOp, std::move(pre)))) {
+    //     return signalPassFailure();
+    //   }
+    // }
+
     {
       RewritePatternSet patterns(ctx);
+      patterns.add<InsertDummyMulForAddReduce>(ctx);
       vector::populateVectorReductionToContractPatterns(patterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
         return signalPassFailure();
