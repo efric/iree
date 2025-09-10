@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include <random>
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
 #include "mlir/Dialect/AMDGPU/Transforms/Passes.h"
@@ -216,19 +217,37 @@ struct InsertDummyMulForAddReduce final
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointAfter(forOp);
 
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<> dis(
+        0.5, 1.5); // Random value between 0.5 and 1.5
+    double randomValue = dis(gen);
+
+    Value cRandom = rewriter.create<arith::ConstantOp>(
+        loc, fty, rewriter.getFloatAttr(fty, randomValue));
+
+    // 2) wrap to prevent 'vector.splat' -> dense<random> folding in the same
+    // step
+    auto wrapped = rewriter.create<UnrealizedConversionCastOp>(
+        loc, TypeRange{fty}, ValueRange{cRandom});
+
+    // 3) vector.splat(wrapped random)
+    Value randoms =
+        rewriter.create<vector::SplatOp>(loc, vt, wrapped.getResult(0));
+
     // Build a ones vector that's not immediately folded:
     // 1) constant 1.0
-    Value c1 = rewriter.create<arith::ConstantOp>(
-        loc, fty, rewriter.getFloatAttr(fty, 1.0));
-    // 2) wrap to prevent 'vector.splat' -> dense<1> folding in the same step
-    auto wrapped =
-        rewriter.create<UnrealizedConversionCastOp>(loc, TypeRange{fty},
-                                                    ValueRange{c1});
-    // 3) vector.splat(wrapped 1.0)
-    Value ones = rewriter.create<vector::SplatOp>(loc, vt, wrapped.getResult(0));
+    // Value c1 = rewriter.create<arith::ConstantOp>(
+    //     loc, fty, rewriter.getFloatAttr(fty, 1.0));
+    // // 2) wrap to prevent 'vector.splat' -> dense<1> folding in the same step
+    // auto wrapped =
+    //     rewriter.create<UnrealizedConversionCastOp>(loc, TypeRange{fty},
+    //                                                 ValueRange{c1});
+    // // 3) vector.splat(wrapped 1.0)
+    // Value ones = rewriter.create<vector::SplatOp>(loc, vt, wrapped.getResult(0));
 
     // %mul = arith.mulf %src, %ones : vector<...xf>
-    Value mul = rewriter.create<arith::MulFOp>(loc, src, ones);
+    Value mul = rewriter.create<arith::MulFOp>(loc, src, randoms);
 
     // Replace the reduction with the same one but sourcing from %mul.
     auto newRed = rewriter.replaceOpWithNewOp<vector::MultiDimReductionOp>(
@@ -259,9 +278,23 @@ struct ReduceAddToContractWithOnes
     
     // Build Ones tensor: vector.splat(1.0)
     Location loc = op.getLoc();
-    Value one = rewriter.create<arith::ConstantOp>(
-        loc, fty, rewriter.getFloatAttr(fty, 1.0));
-    Value ones = rewriter.create<vector::SplatOp>(loc, vt, one);
+    SmallVector<Attribute> randomValues;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<> dis(0.0,
+                                         2.0); // Random values between 0 and 1
+
+    // Generate random values for all elements in the vector
+    for (int64_t i = 0; i < vt.getNumElements(); ++i) {
+      randomValues.push_back(rewriter.getFloatAttr(fty, dis(gen)));
+    }
+    
+    // Create a dense constant with the random values
+    auto randomDenseAttr = DenseElementsAttr::get(vt, randomValues);
+    Value randoms = rewriter.create<arith::ConstantOp>(loc, vt, randomDenseAttr);
+    // Value one = rewriter.create<arith::ConstantOp>(
+    //     loc, fty, rewriter.getFloatAttr(fty, 1.0));
+    // Value ones = rewriter.create<vector::SplatOp>(loc, vt, one);
     
     // Build maps/iters from the reduction mask
     SmallVector<bool> mask = op.getReductionMask();
@@ -316,7 +349,7 @@ struct ReduceAddToContractWithOnes
         loc, 
         op.getType(),                          // Result type
         op.getSource(),                        // LHS
-        ones,                                  // RHS  
+        randoms,                                 // RHS  
         acc,                                   // Accumulator
         rewriter.getAffineMapArrayAttr({srcMap, srcMap, dstMap}), // Maps
         itersAttr,                             // Iterator types
