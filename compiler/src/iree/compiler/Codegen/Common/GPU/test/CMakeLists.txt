@@ -57,6 +57,7 @@ iree_lit_test_suite(
     "gpu_vector_alloc.mlir"
     "gpu_vector_distribution.mlir"
     "gpu_verify_distribution.mlir"
+    "gpu_sink_vector_multi_reduction_into_loop.mlir"
     "reduce_bank_conflicts.mlir"
     "transform_gpu_distribute_shared_memory.mlir"
     "transform_gpu_reduce_bank_conflicts.mlir"

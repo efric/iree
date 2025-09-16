@@ -88,6 +88,7 @@ iree_cc_library(
     "GPUTileAndConvertConvToMatmul.cpp"
     "GPUTileReduction.cpp"
     "GPUVectorAlloc.cpp"
+    "GPUSinkVectorMultiReductionIntoLoop.cpp"
     "GPUVectorDistribution.cpp"
     "GPUVerifyDistribution.cpp"
     "Passes.cpp"

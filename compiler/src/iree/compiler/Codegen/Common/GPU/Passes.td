@@ -417,6 +417,17 @@ def GPUVectorAllocPass :
   ];
 }
 
+def GPUSinkVectorMultiReductionIntoLoopPass :
+    InterfacePass<"iree-codegen-gpu-sink-vector-multi-reduction-into-loop",
+                  "mlir::FunctionOpInterface"> {
+  let summary = "Sink vector.multi_reduction into inner reduction loop";
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::vector::VectorDialect",
+    "::mlir::arith::ArithDialect"
+  ];
+}
+
 def ReorderWorkgroupsPass :
     InterfacePass<"iree-codegen-reorder-workgroups", "mlir::FunctionOpInterface"> {
   let summary = "Reorder workgroup ids for better cache reuse";

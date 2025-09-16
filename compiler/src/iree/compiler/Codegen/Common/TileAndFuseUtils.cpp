@@ -270,6 +270,9 @@ LogicalResult applyTileAndFuseToEachRoot(
   for (TilingInterface tilingInterfaceOp : payloadOps) {
     mlir::DominanceInfo dominanceInfo(tilingInterfaceOp);
 
+    // ok so tilinginterfaceOp is the root
+    // we've collected its parents until the next root
+    // now we go through its users and we ask if the root dominates any of them 
     llvm::SmallDenseSet<Operation *> tiledAndFusedOps =
         collectTiledAndFusedOps(tilingInterfaceOp, payloadOps);
     llvm::DenseSet<Operation *> yieldReplacementsFor;
