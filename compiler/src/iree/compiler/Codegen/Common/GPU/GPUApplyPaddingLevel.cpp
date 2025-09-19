@@ -220,8 +220,83 @@ static LogicalResult applyPaddingLevel(RewriterBase &rewriter,
 
   TilingInterface paddedOp = *maybePaddedOp;
 
+  // If no padding operations were introduced, skip injecting any reduction
+  // guards. This avoids adding unnecessary arith.select when iteration space
+  // did not change.
+  if (padOps.empty()) {
+    return success();
+  }
+
   if (auto paddedLinalgOp =
           dyn_cast<linalg::LinalgOp>(paddedOp.getOperation())) {
+    // Determine whether the introduced padding can affect reduction loops. If
+    // padding only touches parallel loops, we can skip adding guards in the
+    // reduction combiner.
+    bool paddingTouchesReduction = false;
+    {
+      SmallVector<AffineMap> indexingMaps =
+          paddedLinalgOp.getIndexingMapsArray();
+      SmallVector<utils::IteratorType> iteratorTypes =
+          paddedLinalgOp.getIteratorTypesArray();
+
+      llvm::SmallVector<unsigned, 4> reductionLoopIndices;
+      reductionLoopIndices.reserve(iteratorTypes.size());
+      for (unsigned i = 0, e = iteratorTypes.size(); i < e; ++i) {
+        if (linalg::isReductionIterator(iteratorTypes[i]))
+          reductionLoopIndices.push_back(i);
+      }
+
+      // Fast-path: if there are no reduction loops, nothing to guard.
+      if (reductionLoopIndices.empty()) {
+        paddingTouchesReduction = false;
+      } else {
+        // Build a set of values that are results of PadOps introduced above.
+        llvm::SmallDenseSet<Value> paddedOperandValues;
+        paddedOperandValues.reserve(padOps.size());
+        for (tensor::PadOp padOp : padOps)
+          paddedOperandValues.insert(padOp.getResult());
+
+        // Check if any padded operand is indexed by any reduction loop that is
+        // also padded to a non-trivial multiple.
+        unsigned numOperands = paddedLinalgOp->getNumOperands();
+        for (unsigned operandIdx = 0; operandIdx < numOperands; ++operandIdx) {
+          Value operandVal = paddedLinalgOp->getOperand(operandIdx);
+          if (!paddedOperandValues.contains(operandVal))
+            continue;
+
+          AffineMap map = indexingMaps[operandIdx];
+          for (unsigned red : reductionLoopIndices) {
+            // If this reduction loop does not have a meaningful padding size,
+            // skip it.
+            if (red >= tileSizes.size() || tileSizes[red] <= 1)
+              continue;
+
+            // If any result expr depends on the reduction loop dim, then the
+            // padded operand accesses can occur along reduction iterations.
+            bool dependsOnReduction = false;
+            for (AffineExpr res : map.getResults()) {
+              if (res.isFunctionOfDim(red)) {
+                dependsOnReduction = true;
+                break;
+              }
+            }
+            if (dependsOnReduction) {
+              paddingTouchesReduction = true;
+              break;
+            }
+          }
+          if (paddingTouchesReduction)
+            break;
+        }
+      }
+    }
+
+    if (!paddingTouchesReduction) {
+      // Padding does not intersect reduction loops, skip select guards.
+      // Still proceed with copy enabling below for PadOps.
+      Block *block = paddedLinalgOp.getBlock();
+      (void)block; // Suppress unused warning if asserts are off below.
+    } else {
     Block *block = paddedLinalgOp.getBlock();
 
     SmallVector<Operation *> reductions;
@@ -289,6 +364,7 @@ static LogicalResult applyPaddingLevel(RewriterBase &rewriter,
       mapping.map(reduction->getOperand(uncarryIndex), selected);
       Operation *redClone = rewriter.clone(*reduction, mapping);
       rewriter.replaceOp(reduction, redClone);
+    }
     }
   }
 
