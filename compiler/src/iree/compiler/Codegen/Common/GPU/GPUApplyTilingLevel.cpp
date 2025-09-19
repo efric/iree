@@ -13,6 +13,7 @@
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUEnums.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLForwardCompat.h"
+#include "llvm/Support/DebugLog.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -61,6 +62,7 @@ getTiledOps(Operation *funcOp, IREE::GPU::TilingLevel tilingLevel) {
 
 void GPUApplyTilingLevelPass::runOnOperation() {
   FunctionOpInterface funcOp = getOperation();
+  LDBG() << "Tiling level: " << IREE::GPU::stringifyEnum(tilingLevel) << "\n";
 
   if (tilingLevel != IREE::GPU::TilingLevel::Reduction &&
       tilingLevel != IREE::GPU::TilingLevel::Thread &&
@@ -74,9 +76,14 @@ void GPUApplyTilingLevelPass::runOnOperation() {
   llvm::SmallDenseSet<TilingInterface> targetOps =
       getTiledOps(funcOp, tilingLevel);
 
+  for (auto target : targetOps) {
+    LDBG() << "Target op: " << target->getName().getStringRef();
+  }
+
   IRRewriter rewriter(funcOp);
   if (failed(applyTileAndFuseToEachRoot(rewriter, targetOps, tilingLevel,
                                         allowZeroSlices))) {
+    LDBG() << "BAD";
     funcOp.emitError() << "tiling of level "
                        << IREE::GPU::stringifyEnum(tilingLevel) << " failed\n";
     return signalPassFailure();

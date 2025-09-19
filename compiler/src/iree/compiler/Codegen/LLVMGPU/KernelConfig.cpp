@@ -468,6 +468,14 @@ getVectorDistributeReductionConfig(
   int subgroup = partialReductionSize / subgroupStride;
   int64_t subgroupBasis = (subgroup == 0) ? 1 : subgroup;
 
+  LDBG() << "Partial reduction size: " << partialReductionSize;
+  LDBG() << "Last reduction dim size: " << lastReductionDimSize;
+  LDBG() << "Workgroup size: " << workgroupSize;
+  LDBG() << "Thread loads:" << threadLoads;
+
+  LDBG() << "\nThread basis: " << threadBasis;
+  LDBG() << "Subgroup basis: " << subgroupBasis;
+
   partialReductionTileSizes[lastReductionDim] = partialReductionSize;
   threadTileSizes[lastReductionDim] = threadLoads;
   threadCounts[lastReductionDim] = threadBasis;

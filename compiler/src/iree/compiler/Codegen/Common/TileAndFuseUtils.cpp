@@ -12,6 +12,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/DebugLog.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -420,6 +421,8 @@ LogicalResult applyTileAndFuseToEachRoot(
 
     if (IREE::Codegen::LoweringConfigAttrInterface originalConfig =
             getLoweringConfig(tilingInterfaceOp)) {
+      originalConfig.dump();
+      tilingInterfaceOp.dump();
       if (!tiledResults->tiledAndFusedOps.empty()) {
         setLoweringConfig(tiledResults->tiledAndFusedOps[0], originalConfig);
       }
