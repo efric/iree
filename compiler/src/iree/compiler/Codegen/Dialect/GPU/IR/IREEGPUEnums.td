@@ -370,6 +370,7 @@ def PartialReduction : I32EnumAttrCase<"PartialReduction", 2>;
 def Thread : I32EnumAttrCase<"Thread", 3>;
 def Subgroup : I32EnumAttrCase<"Subgroup", 4>;
 def Lane : I32EnumAttrCase<"Lane", 5>;
+def ExpandDims : I32EnumAttrCase<"ExpandDims", 6>;
 
 /// Enum descriptor for the set of tiling levels for GPU pass pipelines.
 /// Note that `Thread` tiling is mutually exclusive with `Subgroup` and
@@ -382,7 +383,8 @@ def IREEGPU_TilingLevel : IREEGPU_I32EnumAttr<"TilingLevel",
       PartialReduction,
       Thread,
       Subgroup,
-      Lane
+      Lane,
+      ExpandDims
     ]>;
 
 //===----------------------------------------------------------------------===//

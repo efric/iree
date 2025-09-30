@@ -482,6 +482,31 @@ getVectorDistributeReductionConfig(
   ArrayAttr threadBasisAttr = b.getArrayAttr(
       {b.getI64ArrayAttr(threadCounts), b.getI64ArrayAttr(mapping)});
 
+    LDBG() << "partialReductionSize: " << partialReductionSize;
+    LDBG() << "threadLoads: " << threadLoads;
+    LDBG() << "threadBasis: " << threadBasis;
+    LDBG() << "subgroupBasis: " << subgroupBasis;
+
+    LDBG() << "workgroupTileSizes: ";
+    for (auto workgroupTileSize : workgroupTileSizes) {
+      LDBG() << workgroupTileSize << " ";
+    }
+
+    LDBG() << "threadTileSizes: ";
+    for (auto threadTileSize : threadTileSizes) {
+      LDBG() << threadTileSize << " ";
+    }
+
+    LDBG() << "threadCounts: ";
+    for (auto threadCount : threadCounts) {
+      LDBG() << threadCount << " ";
+    }
+
+    LDBG() << "subGroupCounts: ";
+    for (auto subGroupCount : subGroupCounts) {
+      LDBG() << subGroupCount << " ";
+    }
+
   NamedAttribute configAttrs[] = {
       NamedAttribute("workgroup", b.getI64ArrayAttr(workgroupTileSizes)),
       NamedAttribute("partial_reduction",
