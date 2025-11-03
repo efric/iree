@@ -26,6 +26,7 @@
 #include "iree/compiler/Dialect/HAL/Target/TargetRegistry.h"
 #include "iree/compiler/Dialect/HAL/Utils/ExecutableDebugInfoUtils.h"
 #include "iree/compiler/Dialect/HAL/Utils/LLVMLinkerUtils.h"
+#include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
 #include "iree/compiler/PluginAPI/Client.h"
 #include "iree/compiler/Utils/EmbeddedDataDirectory.h"
 #include "iree/compiler/Utils/FlatbufferUtils.h"
@@ -91,6 +92,7 @@ struct ROCMOptions {
   IREE::Codegen::DenormalFpMath denormalFpMathF32 =
       IREE::Codegen::DenormalFpMath::None;
   bool enableRegSpillWarning = false;
+  bool debugSymbols = false;
 
   void bindOptions(OptionsBinder &binder) {
     using namespace llvm;
@@ -178,6 +180,9 @@ struct ROCMOptions {
     binder.opt<bool>("iree-hip-enable-register-spill-warning",
                      enableRegSpillWarning, cl::cat(category),
                      cl::desc("Report register spilling for AMD GPUs"));
+    binder.opt<bool>(
+        "iree-hip-emit-debug-info", debugSymbols, cl::cat(category),
+        cl::desc("Generate and embed debug information (DWARF) for HIP."));
   }
 
   LogicalResult verify(mlir::Builder &builder) const {
@@ -275,12 +280,13 @@ static void checkRegisterSpilling(IREE::HAL::ExecutableVariantOp &variantOp,
 
   if (!llvm::offloading::amdgpu::getAMDGPUMetaDataFromImage(
           llvm::MemoryBufferRef(obj, ""), infoMap, abiVersion)) {
-    for (const auto &[_, metaData] : infoMap) {
+    for (const auto &[dispatchName, metaData] : infoMap) {
       if (metaData.SGPRSpillCount > 0 || metaData.VGPRSpillCount > 0) {
         emitWarning(variantOp.getLoc())
             << "Register spill: " << "VGPRSpillCount: "
             << metaData.VGPRSpillCount
-            << " / SGPRSpillCount: " << metaData.SGPRSpillCount;
+            << " / SGPRSpillCount: " << metaData.SGPRSpillCount
+            << " / Dispatch: " << dispatchName;
       }
     }
   }
@@ -395,6 +401,8 @@ public:
     registry.insert<IREE::VectorExt::IREEVectorExtDialect>();
     registry.insert<IREE::GPU::IREEGPUDialect>();
     registry.insert<IREE::ROCM::ROCMDialect>();
+    registry.insert<IREE::Util::UtilDialect>();
+    registry.insert<mlir::gpu::GPUDialect>();
     // Configuration may load and manipulate transform dialect libraries.
     registerTransformDialectTranslationDependentDialects(registry);
   }
@@ -448,7 +456,7 @@ public:
 
   void buildTranslationPassPipeline(IREE::HAL::ExecutableTargetAttr targetAttr,
                                     OpPassManager &passManager) override {
-    buildLLVMGPUCodegenPassPipeline(passManager, true);
+    buildLLVMGPUCodegenPassPipeline(passManager, true, options.debugSymbols);
   }
 
   void buildLinkingPassPipeline(OpPassManager &passManager) override {
@@ -631,7 +639,6 @@ public:
         }
         llvm::TargetOptions opt;
         opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
-        opt.UnsafeFPMath = false;
         opt.NoInfsFPMath = false;
         opt.NoNaNsFPMath = true;
         // Be extra cautious while this is less tested, and prevent unknown
@@ -694,6 +701,7 @@ public:
       // CI or users may not be prepared for.
       llvmModule->addModuleFlag(llvm::Module::Error,
                                 "amdhsa_code_object_version", abiVersion);
+
       for (llvm::Function &f : llvmModule->functions())
         f.addFnAttr(llvm::Attribute::AlwaysInline);
 
@@ -1050,7 +1058,7 @@ private:
 
 class AMDGPUTargetDevice final : public TargetDevice {
 public:
-  AMDGPUTargetDevice(const ROCMOptions &options) : options(options) {}
+  AMDGPUTargetDevice(const ROCMOptions & /*options*/) {}
 
   IREE::HAL::DeviceTargetAttr
   getDefaultDeviceTarget(MLIRContext *context,
@@ -1069,14 +1077,11 @@ public:
                                             deviceConfigAttr,
                                             executableTargetAttrs);
   }
-
-private:
-  const ROCMOptions &options;
 };
 
 class HIPTargetDevice final : public TargetDevice {
 public:
-  HIPTargetDevice(const ROCMOptions &options) : options(options) {}
+  HIPTargetDevice(const ROCMOptions & /*options*/) {}
 
   IREE::HAL::DeviceTargetAttr
   getDefaultDeviceTarget(MLIRContext *context,
@@ -1095,9 +1100,6 @@ public:
                                             deviceConfigAttr,
                                             executableTargetAttrs);
   }
-
-private:
-  const ROCMOptions &options;
 };
 
 namespace {

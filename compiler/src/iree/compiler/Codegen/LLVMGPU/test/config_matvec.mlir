@@ -25,7 +25,7 @@ func.func @static_batch_matvec() {
 
 
 // CHECK:     LLVMGPUVectorDistribute
-// CDNA3:     LLVMGPUTileAndFuse
+// CDNA3:     LLVMGPUVectorDistribute
 
 // -----
 
@@ -74,6 +74,8 @@ func.func @dynamic_batch_generic_matvec() {
 //  CHECK-SAME:     translation_info = #[[$TRANSLATION]]
 //       CHECK:   linalg.generic
 //  CHECK-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
+//  CHECK-SAME:               expand_dims = {{\[}}[0], [1], [2], [3]],
+//  CHECK-SAME:               lane_basis = {{\[}}[1, 1, 1, 64], [0, 1, 2, 3]],
 //  CHECK-SAME:               partial_reduction = [0, 0, 0, 512],
 //  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]],
 //  CHECK-SAME:               thread = [0, 0, 0, 8],
@@ -119,11 +121,12 @@ func.func @vmt1() attributes {hal.executable.target = #executable_target_rocm_hs
 //  CHECK-SAME:     translation_info = #[[$TRANSLATION]]
 //       CHECK:   linalg.generic
 //  CHECK-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
-//  CHECK-SAME:               lane_basis = {{\[}}[1, 1, 64], [0, 1, 2]],
-//  CHECK-SAME:               partial_reduction = [0, 0, 512],
-//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1], [0, 1, 2]],
-//  CHECK-SAME:               thread = [0, 0, 8],
-//  CHECK-SAME:               workgroup = [1, 8, 0]
+//  CHECK-SAME:               expand_dims = {{\[}}[0], [1], [2, 3]{{\]}},
+//  CHECK-SAME:               lane_basis = {{\[}}[1, 1, 64, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:               partial_reduction = [0, 0, 64, 0],
+//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:               thread = [0, 0, 1, 8],
+//  CHECK-SAME:               workgroup = [1, 8, 0, 0]
 
 
 // -----
@@ -162,11 +165,12 @@ func.func @matvec_like_no_m_dim() attributes {hal.executable.target = #executabl
 //  CHECK-SAME:     translation_info = #[[$TRANSLATION]]
 //       CHECK:   linalg.generic
 //  CHECK-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
-//  CHECK-SAME:               lane_basis = {{\[}}[1, 64], [0, 1]],
-//  CHECK-SAME:               partial_reduction = [0, 512],
-//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1], [0, 1]],
-//  CHECK-SAME:               thread = [0, 8],
-//  CHECK-SAME:               workgroup = [8, 0]
+//  CHECK-SAME:               expand_dims = {{\[}}[0], [1, 2]{{\]}},
+//  CHECK-SAME:               lane_basis = {{\[}}[1, 64, 1], [0, 1, 2]{{\]}},
+//  CHECK-SAME:               partial_reduction = [0, 64, 0],
+//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1], [0, 1, 2]{{\]}},
+//  CHECK-SAME:               thread = [0, 1, 8],
+//  CHECK-SAME:               workgroup = [8, 0, 0]
 
 // -----
 
@@ -204,11 +208,12 @@ func.func @matvec_unit_n_dim() attributes {hal.executable.target = #executable_t
 //  CHECK-SAME:     translation_info = #[[$TRANSLATION]]
 //       CHECK:   linalg.generic
 //  CHECK-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
-//  CHECK-SAME:               lane_basis = {{\[}}[1, 1, 64], [0, 1, 2]],
-//  CHECK-SAME:               partial_reduction = [0, 0, 512],
-//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1], [0, 1, 2]],
-//  CHECK-SAME:               thread = [0, 0, 8],
-//  CHECK-SAME:               workgroup = [8, 1, 0]
+//  CHECK-SAME:               expand_dims = {{\[}}[0], [1], [2, 3]{{\]}},
+//  CHECK-SAME:               lane_basis = {{\[}}[1, 1, 64, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:               partial_reduction = [0, 0, 64, 0],
+//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:               thread = [0, 0, 1, 8],
+//  CHECK-SAME:               workgroup = [8, 1, 0, 0]
 
 // -----
 
@@ -248,11 +253,12 @@ func.func @vmt2() attributes {hal.executable.target = #executable_target_rocm_hs
 //  CDNA3-SAME:     translation_info = #[[$TRANSLATION]]
 //       CDNA3:   linalg.generic
 //  CDNA3-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
-//  CDNA3-SAME:               lane_basis = {{\[}}[1, 1, 32], [0, 1, 2]],
-//  CDNA3-SAME:               partial_reduction = [0, 0, 256],
-//  CDNA3-SAME:               subgroup_basis = {{\[}}[1, 1, 1], [0, 1, 2]],
-//  CDNA3-SAME:               thread = [0, 0, 8],
-//  CDNA3-SAME:               workgroup = [1, 4, 0]
+//  CDNA3-SAME:               expand_dims = {{\[}}[0], [1], [2, 3]{{\]}},
+//  CDNA3-SAME:               lane_basis = {{\[}}[1, 1, 32, 1], [0, 1, 2, 3]{{\]}},
+//  CDNA3-SAME:               partial_reduction = [0, 0, 32, 0],
+//  CDNA3-SAME:               subgroup_basis = {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]{{\]}},
+//  CDNA3-SAME:               thread = [0, 0, 1, 8],
+//  CDNA3-SAME:               workgroup = [1, 4, 0, 0]
 
 // -----
 
@@ -308,11 +314,12 @@ func.func @i4_dequant_matvec() {
 //       CHECK:   linalg.generic
 //       CHECK:   linalg.generic
 //  CHECK-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
-//  CHECK-SAME:               lane_basis = {{\[}}[1, 1, 64], [0, 1, 2]],
-//  CHECK-SAME:               partial_reduction = [0, 1, 128],
-//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1], [0, 1, 2]],
-//  CHECK-SAME:               thread = [0, 1, 2],
-//  CHECK-SAME:               workgroup = [8, 0, 0]
+//  CHECK-SAME:               expand_dims = {{\[}}[0], [1], [2, 3]{{\]}},
+//  CHECK-SAME:               lane_basis = {{\[}}[1, 1, 64, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:               partial_reduction = [0, 1, 64, 0],
+//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:               thread = [0, 1, 1, 2],
+//  CHECK-SAME:               workgroup = [8, 0, 0, 0]
 
 // -----
 
@@ -353,11 +360,12 @@ func.func @skinny_mmt_lhs_is_vector() {
 //      CHECK: linalg.matmul
 // CHECK-SAME: indexing_maps = [#[[$MA]], #[[$MB]], #[[$MC]]]
 // CHECK-SAME: lowering_config = #iree_gpu.lowering_config<{
-// CHECK-SAME:       lane_basis =        {{\[}}[1, 1, 64], [0, 1, 2]],
-// CHECK-SAME:       partial_reduction =       [0, 0, 512],
-// CHECK-SAME:       subgroup_basis =    {{\[}}[1, 1, 1], [0, 1, 2]],
-// CHECK-SAME:       thread =                  [0, 0, 8],
-// CHECK-SAME:       workgroup =               [2, 1, 0]}>}
+// CHECK-SAME:       expand_dims =       {{\[}}[0], [1], [2, 3]{{\]}},
+// CHECK-SAME:       lane_basis =        {{\[}}[1, 1, 64, 1], [0, 1, 2, 3]{{\]}},
+// CHECK-SAME:       partial_reduction = [0, 0, 64, 0],
+// CHECK-SAME:       subgroup_basis =    {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]{{\]}},
+// CHECK-SAME:       thread =            [0, 0, 1, 8],
+// CHECK-SAME:       workgroup =         [2, 1, 0, 0]}>}
 
 // -----
 
@@ -395,11 +403,12 @@ func.func @skinny_mmt_lhs_is_matrix() {
 //      CHECK: linalg.matmul
 // CHECK-SAME: indexing_maps
 // CHECK-SAME: lowering_config = #iree_gpu.lowering_config<{
-// CHECK-SAME:       lane_basis =        {{\[}}[1, 1, 64], [0, 1, 2]],
-// CHECK-SAME:       partial_reduction =       [0, 0, 512],
-// CHECK-SAME:       subgroup_basis =    {{\[}}[1, 1, 1], [0, 1, 2]],
-// CHECK-SAME:       thread =                  [0, 0, 8],
-// CHECK-SAME:       workgroup =               [8, 1, 0]}>}
+// CHECK-SAME:       expand_dims =       {{\[}}[0], [1], [2, 3]{{\]}},
+// CHECK-SAME:       lane_basis =        {{\[}}[1, 1, 64, 1], [0, 1, 2, 3]{{\]}},
+// CHECK-SAME:       partial_reduction = [0, 0, 64, 0],
+// CHECK-SAME:       subgroup_basis =    {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]{{\]}},
+// CHECK-SAME:       thread =            [0, 0, 1, 8],
+// CHECK-SAME:       workgroup =         [8, 1, 0, 0]}>}
 
 // -----
 
@@ -551,4 +560,4 @@ func.func @test_dyn_reduction() {
 }
 
 //      CHECK: #iree_codegen.translation_info<pipeline = LLVMGPUVectorDistribute
-// CHECK-SAME: workgroup_size = [2, 1, 1] subgroup_size = 64,
+// CHECK-SAME: workgroup_size = [64, 1, 1] subgroup_size = 64,

@@ -23,6 +23,7 @@
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -551,8 +552,7 @@ struct ConcatenateOpCanon final
 
     uint64_t axis = op.getDimension();
     ArrayRef<int64_t> shape = type.getShape();
-    int64_t topSize = std::accumulate(shape.begin(), shape.begin() + axis,
-                                      int64_t{1}, std::multiplies<>{});
+    int64_t topSize = llvm::product_of(shape.take_front(axis));
 
     SmallVector<Attribute> newElems;
     newElems.reserve(numElems);
@@ -973,6 +973,13 @@ struct ReshapeOpCanon final : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
       rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
           op, SplatElementsAttr::get(op.getType(),
                                      splat.getSplatValue<Attribute>()));
+      return success();
+    }
+
+    if (auto denseResourceAttr = dyn_cast<DenseResourceElementsAttr>(cstAttr)) {
+      rewriter.replaceOpWithNewOp<mlir::stablehlo::ConstantOp>(
+          op, DenseResourceElementsAttr::get(op.getType(),
+                                             denseResourceAttr.getRawHandle()));
       return success();
     }
 
