@@ -77,6 +77,76 @@ FailureOr<IREETilingResult>
 tileDispatchUsingSCFForOp(RewriterBase &rewriter, TilingInterface op,
                           linalg::LinalgTilingOptions options);
 
+namespace IREE::VectorExt {
+class VectorLayoutInterface;
+} // namespace IREE::VectorExt
+
+/// Analyzes the root op and its nested ops to propagate vector layouts
+/// originating from to_vector operations. Example:
+///
+///    %root = vector.transfer_read
+///      |
+///      --> anchored to layout L (using a to_layout op)
+///    %root2 = vector.transfer_read
+///    %c = arith.mulf %root, %b
+///          |
+///          --> %root, %b and %c must have the same layout
+///    %e = arith.divf %b, %root2
+///          |
+///          --> %root2, %b and %e must have the same layout
+///
+/// Here, the user provided an anchor point for %root, fixing its layout to L.
+/// The layout then uses its inference rules to find the layout of other
+/// values:
+///
+///    %root = vector.transfer_read
+///     |
+///     --> infered to layout L
+///    %root2 = vector.transfer_read
+///     |
+///     --> infered to layout L
+///    %c = arith.mulf %root, %b
+///     |
+///     --> infered to layout L
+///    %e = arith.divf %b, %root2
+///     |
+///     --> infered to layout L
+///
+/// If at any point, a value has a layout, but the user of that value requires
+/// a different layout, the analysis inserts a resolution operation. This
+/// resolution operation is `iree_vector_ext.to_layout`.
+/// For Example:
+///
+/// %0 = vector.transfer_read
+///  |
+///  --> anchored to layout L
+/// %1 = vector.transfer_read
+///  |
+///  --> anchored to layout L'
+///  arith.addf %0, %1
+///     |
+///     --> %0 and %1 must have the same layout
+///
+/// To resolve the conflict, the analysis chooses one of the layouts, say
+/// L, and inserts a resolution operation to convert the other layout to L.
+///
+/// %0 = vector.transfer_read
+///  |
+///  --> anchored to layout L
+/// %1 = vector.transfer_read
+///  |
+///  --> anchored to layout L'
+/// %resolved = iree_vector_ext.to_layout %1
+///  |
+///  --> infered to layout L
+/// arith.addf %0, %resolved
+///
+/// The analysis itself will not try to resolve the conflict, but instead
+/// will leave it as a to_layout op, which can be rewritten by the caller.
+LogicalResult propagateVectorLayoutInfo(
+    Operation *root,
+    llvm::MapVector<Value, IREE::VectorExt::VectorLayoutInterface> &layouts);
+
 /// Transform a `scf.for` loop with a strictly positive step
 ///   for %i = %lb to %ub step %s
 /// into a 0-based loop with step 1
@@ -136,6 +206,42 @@ void populateCombineRelayoutOpPatterns(
 
 /// Populate patterns to fuse tilable consumers of forall ops into it.
 void populateFuseTilableForallConsumersPattern(RewritePatternSet &patterns);
+
+//===----------------------------------------------------------------------===//
+// Utilities for iteration space expansion transformations
+//===----------------------------------------------------------------------===//
+
+/// Helper struct to hold the expand/collapse shape ops created for dimension
+/// expansion or blocking transformations.
+struct ReshapeOps {
+  tensor::ExpandShapeOp expandShapeOp;
+  tensor::CollapseShapeOp collapseShapeOp;
+};
+
+/// For a `v` if the dimension is known to be multiple of a compile-time static
+/// value, insert
+///
+/// ```mlir
+/// %v_expand = tensor.expand_shape %v
+/// %barrier = util.optimization.barrier %v
+/// %v_collapse = tensor.collapse_shape %barrier
+/// ```
+///
+/// where the generated `tensor.expand_shape` and `tensor.collapse_shape` are
+/// inverses of each other. The `util.optimization.barrier` avoid these from
+/// getting folded away during reshape propagation. Return the result of the
+/// `tensor.collapse_shape generated.
+std::optional<ReshapeOps> createDimensionExpansionOps(
+    RewriterBase &rewriter,
+    const llvm::SmallDenseMap<unsigned, int64_t> &expansionMap, Value v);
+
+/// Populate patterns to remove optimization barriers.
+void populateRemoveOptimizationBarrierPatterns(RewritePatternSet &patterns);
+
+/// Populate common patterns for reshape propagation used in dimension
+/// expansion passes.
+void populateReshapePropagationPatterns(
+    RewritePatternSet &patterns, linalg::ControlFusionFn controlFn = nullptr);
 
 } // namespace mlir::iree_compiler
 
