@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
+#include "mlir/IR/Value.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -342,8 +343,10 @@ struct ContractToChainFMA final : OpRewritePattern<vector::ContractionOp> {
                                                  op.getAcc());
     }
 
-    Value resultFlat =
-        buildFMAChain(rewriter, loc, lhs2D, rhs2D, flattenedAcc, redSize);
+    // Form chain in 2-element chunks that we can map to one packed FMA.
+    int64_t chunkSize = 2;
+    Value resultFlat = buildFMAChain(rewriter, loc, lhs2D, rhs2D, flattenedAcc,
+                                     redSize, parSize, chunkSize);
 
     // Restore result to original form.
     Value result;
@@ -486,14 +489,36 @@ private:
   }
 
   static Value buildFMAChain(PatternRewriter &rewriter, Location loc,
-                             Value lhs2D, Value rhs2D, Value accFlat,
-                             int64_t K) {
+                             Value lhs2D, Value rhs2D, Value accFlat, int64_t K,
+                             int64_t parSize, int64_t chunkSize) {
     Value current = accFlat;
 
     for (int64_t k = K - 1; k >= 0; --k) {
       Value a = vector::ExtractOp::create(rewriter, loc, lhs2D, k);
       Value b = vector::ExtractOp::create(rewriter, loc, rhs2D, k);
-      current = math::FmaOp::create(rewriter, loc, a, b, current);
+
+      // Process the parallel dimension in chunks.
+      for (int64_t p = 0; p < parSize; p += chunkSize) {
+        int64_t currentChunkSize = std::min(chunkSize, parSize - p);
+
+        // Extract slices from lhs and rhs.
+        Value sliced_a = vector::ExtractStridedSliceOp::create(
+            rewriter, loc, a, {p}, {currentChunkSize}, {1});
+        Value sliced_b = vector::ExtractStridedSliceOp::create(
+            rewriter, loc, b, {p}, {currentChunkSize}, {1});
+
+        // Extract the corresponding slice from the accumulator.
+        Value sliced_acc = vector::ExtractStridedSliceOp::create(
+            rewriter, loc, current, {p}, {currentChunkSize}, {1});
+
+        // FMA on the slices.
+        Value fmaResult =
+            math::FmaOp::create(rewriter, loc, sliced_a, sliced_b, sliced_acc);
+
+        // Insert the result back into the accumulator.
+        current = vector::InsertStridedSliceOp::create(rewriter, loc, fmaResult,
+                                                       current, {p}, {1});
+      }
     }
     return current;
   }
