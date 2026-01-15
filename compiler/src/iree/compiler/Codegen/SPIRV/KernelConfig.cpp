@@ -18,6 +18,7 @@
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/DebugLog.h"
 #include "llvm/Support/InterleavedRange.h"
@@ -1083,11 +1084,11 @@ static bool canDistributeShape(ArrayRef<int64_t> shape, int64_t groupSize) {
 // be distributable, but since distribution patterns work bottom-up from the
 // yield, if a consumer shape fails distribution, it stays inside the region,
 // which keeps its operands (including the reduction) inside too. This forces
-// fallback to single thread execution. In such cases, we conservatively limit
-// the workgroup size to subgroup size.
+// fallback to single thread execution.
 //
-// Example of an incompatible consumer with groupSize=512:
+// Example of an incompatible consumer shape with groupSize=512:
 //
+// ```mlir
 //   %red = linalg.reduce ins(%in) outs(%init) -> tensor<f32>
 //   %consumer = linalg.generic {
 //     indexing_maps = [affine_map<(d0, d1, d2) -> ()>,
@@ -1097,6 +1098,7 @@ static bool canDistributeShape(ArrayRef<int64_t> shape, int64_t groupSize) {
 //       %add = arith.addf %in, %out : f32
 //       linalg.yield %add : f32
 //   }
+// ```
 //
 // The scalar reduction result broadcasts across consumer dims [64, 3, 32]. When
 // we try to distribute across this shape for elementwise addition using warp
@@ -1104,61 +1106,44 @@ static bool canDistributeShape(ArrayRef<int64_t> shape, int64_t groupSize) {
 //   - d0=64: 512 % 64 = 0; so remaining is 512/64 = 8
 //   - d1=3: 8 % 3 != 0 and 3 % 8 != 0 -> failure
 // Since the consumer fails distribution, the reduction is also blocked and
-// the entire chain of operations stays inside the region.
-// static bool hasIncompatibleConsumer(linalg::LinalgOp reductionOp,
-//                                     int64_t groupSize) {
-//   for (Value result : reductionOp->getResults()) {
-//     for (Operation *user : result.getUsers()) {
-//       auto consumerOp = dyn_cast<linalg::LinalgOp>(user);
-//       if (!consumerOp) {
-//         continue;
-//       }
+// the entire chain of operations stays inside the region. In such cases, we
+// conservatively limit the workgroup size to subgroup size.
+//
+// Another example is when the the reduction tile sizes measured for the
+// reduction do not align with consumer indexed dimensions. Again, the
+// incompatibility forces a single-threaded warp reduction path. In
+// this case, we bail and fall back to another pipeline.
+//
+// Example of incompatible producer tile sizes
+//  ```mlir
+//   %sum = linalg.generic {
+//     indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2, d1)>,
+//                      affine_map<(d0, d1, d2) -> (d0, d1)>],
+//     iterator_types = ["parallel", "parallel", "reduction"]
+//   } ins(%in : tensor<16x64x74xf32>)
+//     outs(%init : tensor<16x74xf32>) { ... } -> tensor<16x74xf32>
+//
+//   %norm = linalg.generic {
+//     indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2, d1)>,
+//                      affine_map<(d0, d1, d2) -> (d0, d2)>,
+//                      affine_map<(d0, d1, d2) -> (d0, d2, d1)>],
+//     iterator_types = ["parallel", "parallel", "parallel"]
+//   } ins(%in, %sum : tensor<16x64x74xf32>, tensor<16x74xf32>)
+//     outs(%out : tensor<16x74x64xf32>) { ... }
+// ```
+// Here, the reduction produces a tensor of shape [16, 74] with tile sizes
+// [16, 0, 74] (0 for reduction dim). The consumer then reads the reduction
+// result with indexing map (d0, d2) -> (d0, d2), meaning the consumer uses
+// dim d1 of size 74. Since the reduction tile size for that dim is 0, it
+// cannot be distributed across the consumer's dim of size 74. This forces
+// single-threaded execution for the entire chain.
 
-//       // Collect dims used by operands referencing the reduction result.
-//       llvm::SmallDenseSet<unsigned> usedDims;
-//       for (OpOperand &operand : consumerOp->getOpOperands()) {
-//         if (operand.get() != result) {
-//           continue;
-//         }
-//         for (AffineExpr expr :
-//              consumerOp.getMatchingIndexingMap(&operand).getResults()) {
-//           if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
-//             usedDims.insert(dimExpr.getPosition());
-//           }
-//         }
-//       }
-
-//       // Broadcast dims are those not indexed by any use of the result.
-//       SmallVector<int64_t> broadcastShape;
-//       for (auto [i, bound] :
-//            llvm::enumerate(consumerOp.getStaticLoopRanges())) {
-//         if (!usedDims.contains(i)) {
-//           broadcastShape.push_back(bound);
-//         }
-//       }
-
-//       if (broadcastShape.empty()) {
-//         continue;
-//       }
-
-//       if (!canDistributeShape(broadcastShape, groupSize)) {
-//         return true;
-//       }
-//     }
-//   }
-//   return false;
-// };
-
-/// Distribution constraints from reduction consumers.
 struct ConsumerConstraints {
-  /// Broadcast shapes to check against groupSize via canDistributeShape.
   SmallVector<SmallVector<int64_t>> broadcastShapes;
-  /// (dim, consumer bound) pairs requiring reductionTileSizes[dim] | bound.
   SmallVector<std::pair<unsigned, int64_t>> usedDimBounds;
 };
 
-/// Collect distribution constraints from reduction consumers.
-/// See header comment for detailed example.
+// Walk users of the reduction op to collect constraints on distribution.
 static ConsumerConstraints
 collectConsumerConstraints(linalg::LinalgOp reductionOp) {
   ConsumerConstraints constraints;
@@ -1170,49 +1155,56 @@ collectConsumerConstraints(linalg::LinalgOp reductionOp) {
 
       llvm::SmallBitVector usedDims(consumer.getStaticLoopRanges().size());
 
-      // Mark dims referenced by operands consuming this result.
       for (OpOperand &operand : consumer->getOpOperands()) {
-        if (operand.get() != result)
+        if (operand.get() != result) {
           continue;
+        }
         for (AffineExpr expr :
              consumer.getMatchingIndexingMap(&operand).getResults())
-          if (auto dim = dyn_cast<AffineDimExpr>(expr))
+          if (auto dim = dyn_cast<AffineDimExpr>(expr)) {
             usedDims.set(dim.getPosition());
+          }
       }
 
-      // Partition into used dims (divisibility check) and broadcast
-      // (distribution check).
       SmallVector<int64_t> broadcastShape;
       for (auto [i, bound] : llvm::enumerate(consumer.getStaticLoopRanges())) {
-        if (usedDims.test(i))
+        if (usedDims.test(i)) {
           constraints.usedDimBounds.emplace_back(i, bound);
-        else
+        } else {
           broadcastShape.push_back(bound);
+        }
       }
-      if (!broadcastShape.empty())
+
+      if (!broadcastShape.empty()) {
         constraints.broadcastShapes.push_back(std::move(broadcastShape));
+      }
     }
   }
   return constraints;
 }
 
+// Check if all broadcast shapes can be distributed across the workgroup.
 static bool canDistributeBroadcasts(const ConsumerConstraints &constraints,
                                     int64_t groupSize) {
   return llvm::all_of(constraints.broadcastShapes,
-                      [=](ArrayRef<int64_t> shape) {
+                      [&](ArrayRef<int64_t> shape) {
                         return canDistributeShape(shape, groupSize);
                       });
 }
 
+
+// Check if all used dims can be distributed based on the reduction tile sizes.
 static bool canDistributeUsedDims(const ConsumerConstraints &constraints,
                                   ArrayRef<int64_t> tileSizes) {
-  return llvm::all_of(constraints.usedDimBounds, [&](auto dimAndBound) {
-    auto [dim, bound] = dimAndBound;
-    return tileSizes[dim] == 0 || bound % tileSizes[dim] == 0;
-  });
+  return llvm::all_of(constraints.usedDimBounds,
+                      [&](std::pair<unsigned, int64_t> &dimAndBound) {
+                        auto [dim, bound] = dimAndBound;
+                        return tileSizes[dim] == 0 ||
+                               bound % tileSizes[dim] == 0;
+                      });
 }
 
-/// Compute reduction tile sizes for the given group size.
+// Compute tile sizes for reduction dimensions.
 static SmallVector<int64_t>
 computeReductionTileSizes(linalg::LinalgOp op, ArrayRef<int64_t> bounds,
                           ArrayRef<unsigned> reductionDims, int64_t groupSize,
@@ -1230,17 +1222,20 @@ computeReductionTileSizes(linalg::LinalgOp op, ArrayRef<int64_t> bounds,
   return tileSizes;
 }
 
+// Try to compute reduction tile sizes given consumer constraints.
 static std::optional<SmallVector<int64_t>>
 tryComputeReductionTileSizes(linalg::LinalgOp op, ArrayRef<int64_t> bounds,
                              ArrayRef<unsigned> reductionDims,
                              const ConsumerConstraints &constraints,
                              int64_t groupSize, unsigned vectorSize) {
-  if (!canDistributeBroadcasts(constraints, groupSize))
+  if (!canDistributeBroadcasts(constraints, groupSize)) {
     return std::nullopt;
+  }
   auto tiles =
       computeReductionTileSizes(op, bounds, reductionDims, groupSize, vectorSize);
-  if (!canDistributeUsedDims(constraints, tiles))
+  if (!canDistributeUsedDims(constraints, tiles)) {
     return std::nullopt;
+  }
   return tiles;
 }
 
@@ -1431,28 +1426,8 @@ static LogicalResult setReductionConfig(IREE::GPU::TargetAttr target,
     LDBG() << "failed: consumer shapes incompatible with distribution";
     return failure();
   }
-  // if (hasIncompatibleConsumer(op, groupSize)) {
-  //   LDBG() << "Reduction has incompatible consumer, limiting workgroup size "
-  //          << "from " << groupSize << " to " << subgroupSize;
-  //   groupSize = subgroupSize;
-  // }
 
   std::array<int64_t, 3> workgroupSize = {groupSize, 1, 1};
-
-  // SmallVector<int64_t> reductionTileSizes(op.getNumLoops(), 0);
-  // int64_t remaingGroupSize = groupSize;
-  // for (int i = reductionDims.size() - 1; i >= 0; --i) {
-  //   int64_t dim = reductionDims[i];
-  //   int64_t bound = bounds[dim];
-  //   if (i == reductionDims.size() - 1)
-  //     bound /= vectorSize;
-  //   APInt size = GreatestCommonDivisor(APInt(64, uint64_t(remaingGroupSize)),
-  //                                      APInt(64, uint64_t(bound)));
-  //   reductionTileSizes[dim] = size.getSExtValue();
-  //   if (i == reductionDims.size() - 1)
-  //     reductionTileSizes[dim] *= vectorSize;
-  //   remaingGroupSize /= size.getSExtValue();
-  // }
 
   TileSizesListType tileSizes;
   tileSizes.emplace_back(std::move(workgroupTileSizes)); // Workgroup level
